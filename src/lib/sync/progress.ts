@@ -1,9 +1,9 @@
-import { redis } from "@/lib/redis";
-import { SYNC_PROGRESS_KEY, SYNC_PROGRESS_TTL } from "@/lib/constants";
+import { db } from "@/lib/db";
+import type { Prisma } from "@/generated/prisma/client";
 import type { SyncProgress } from "@/types";
 
-/** Minimum interval between KV writes (ms) */
-const FLUSH_INTERVAL_MS = 500;
+/** Minimum interval between DB writes (ms) */
+const FLUSH_INTERVAL_MS = 1000;
 
 const DEFAULT_PROGRESS: SyncProgress = {
   isRunning: false,
@@ -13,20 +13,32 @@ const DEFAULT_PROGRESS: SyncProgress = {
 };
 
 // ---------------------------------------------------------------------------
-// In-memory cache – avoids GET+SET round-trips on every progress update.
-// Writes are throttled: at most one KV SET per FLUSH_INTERVAL_MS.
+// In-memory cache – avoids DB round-trips on every progress update.
+// Writes are throttled: at most one DB write per FLUSH_INTERVAL_MS.
 // ---------------------------------------------------------------------------
 let cachedProgress: SyncProgress | null = null;
 let dirty = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let lastFlushTime = 0;
 
-/** Flush cached progress to KV immediately. */
-async function flushToKV(): Promise<void> {
+/** Ensure AppSettings row exists (singleton id=1). */
+async function ensureRow(): Promise<void> {
+  await db.appSettings.upsert({
+    where: { id: 1 },
+    create: { id: 1 },
+    update: {},
+  });
+}
+
+/** Flush cached progress to DB immediately. */
+async function flushToDB(): Promise<void> {
   if (!cachedProgress) return;
   dirty = false;
   lastFlushTime = Date.now();
-  await redis.set(SYNC_PROGRESS_KEY, cachedProgress, { ex: SYNC_PROGRESS_TTL });
+  await db.appSettings.update({
+    where: { id: 1 },
+    data: { syncProgress: cachedProgress as unknown as Prisma.InputJsonValue },
+  });
 }
 
 /** Schedule a deferred flush if one isn't already pending. */
@@ -37,19 +49,29 @@ function scheduleFlush(): void {
   flushTimer = setTimeout(async () => {
     flushTimer = null;
     if (dirty) {
-      await flushToKV();
+      await flushToDB();
     }
   }, delay);
 }
 
 /**
  * Get the current sync progress.
- * Returns the in-memory cache if available, otherwise reads from KV.
+ * Returns the in-memory cache if available, otherwise reads from DB.
+ * Pass `force: true` to always read from DB (used by polling endpoints).
  */
-export async function getSyncProgress(): Promise<SyncProgress> {
-  if (cachedProgress) return { ...cachedProgress };
-  const data = await redis.get<SyncProgress>(SYNC_PROGRESS_KEY);
-  const progress = data || { ...DEFAULT_PROGRESS };
+export async function getSyncProgress(options?: { force?: boolean }): Promise<SyncProgress> {
+  if (cachedProgress && !options?.force) return { ...cachedProgress };
+  await ensureRow();
+  const row = await db.appSettings.findUnique({ where: { id: 1 } });
+  const raw = row?.syncProgress as Record<string, unknown> | null;
+  // Strip internal __lock field from the progress data
+  if (raw) {
+    const { __lock: _, ...rest } = raw;
+    const progress = rest as unknown as SyncProgress;
+    cachedProgress = progress;
+    return { ...progress };
+  }
+  const progress = { ...DEFAULT_PROGRESS };
   cachedProgress = progress;
   return { ...progress };
 }
@@ -57,8 +79,8 @@ export async function getSyncProgress(): Promise<SyncProgress> {
 /**
  * Update sync progress (partial update).
  * Writes are throttled – the in-memory state is always current
- * and KV is flushed at most once per FLUSH_INTERVAL_MS.
- * Pass `{ immediate: true }` in the options to force an immediate KV write
+ * and DB is flushed at most once per FLUSH_INTERVAL_MS.
+ * Pass `{ immediate: true }` in the options to force an immediate DB write
  * (used for start/end events where the client must see the change right away).
  */
 export async function updateSyncProgress(
@@ -76,7 +98,7 @@ export async function updateSyncProgress(
       clearTimeout(flushTimer);
       flushTimer = null;
     }
-    await flushToKV();
+    await flushToDB();
   } else {
     scheduleFlush();
   }
@@ -92,8 +114,10 @@ export async function resetSyncProgress(): Promise<void> {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  await redis.set(SYNC_PROGRESS_KEY, cachedProgress, {
-    ex: SYNC_PROGRESS_TTL,
+  await ensureRow();
+  await db.appSettings.update({
+    where: { id: 1 },
+    data: { syncProgress: DEFAULT_PROGRESS as unknown as Prisma.InputJsonValue },
   });
 }
 
@@ -110,7 +134,7 @@ export async function addSyncError(error: string): Promise<void> {
 }
 
 /**
- * Ensure any pending progress is flushed to KV.
+ * Ensure any pending progress is flushed to DB.
  * Call this at the very end of a sync run.
  */
 export async function flushSyncProgress(): Promise<void> {
@@ -119,7 +143,7 @@ export async function flushSyncProgress(): Promise<void> {
     flushTimer = null;
   }
   if (dirty) {
-    await flushToKV();
+    await flushToDB();
   }
   cachedProgress = null;
 }
