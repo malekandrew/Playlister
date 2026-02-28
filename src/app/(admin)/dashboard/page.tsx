@@ -9,10 +9,13 @@ import { db } from "@/lib/db";
 import { SyncProgressCard } from "@/components/admin/sync-progress";
 
 export default async function DashboardPage() {
-  const [sourceCount, channelCount, sublistCount] = await Promise.all([
+  const [sourceCount, channelCount, sublistCount, liveCount, movieCount, seriesCount] = await Promise.all([
     db.sourcePlaylist.count(),
     db.channel.count(),
     db.sublist.count(),
+    db.channel.count({ where: { category: { categoryType: "live" } } }),
+    db.channel.count({ where: { category: { categoryType: "movie" } } }),
+    db.channel.count({ where: { category: { categoryType: "series" } } }),
   ]);
 
   return (
@@ -40,12 +43,23 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>Channels</CardDescription>
-            <CardTitle className="text-4xl">{channelCount}</CardTitle>
+            <CardTitle className="text-4xl">{channelCount.toLocaleString()}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-xs text-muted-foreground">
               Total synced channels
             </p>
+            <div className="mt-3 flex items-center gap-3 text-xs">
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-blue-600 dark:text-blue-400">
+                <span className="font-semibold">{liveCount.toLocaleString()}</span> Live
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-purple-500/10 px-2 py-0.5 text-purple-600 dark:text-purple-400">
+                <span className="font-semibold">{movieCount.toLocaleString()}</span> Movies
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-emerald-600 dark:text-emerald-400">
+                <span className="font-semibold">{seriesCount.toLocaleString()}</span> Series
+              </span>
+            </div>
           </CardContent>
         </Card>
 
