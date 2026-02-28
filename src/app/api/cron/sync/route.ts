@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { runFullSync } from "@/lib/sync/engine";
 
+export const maxDuration = 60;
+
 /**
  * Vercel Cron handler — triggers a full sync on schedule.
  * Protected by CRON_SECRET to prevent unauthorized access.
