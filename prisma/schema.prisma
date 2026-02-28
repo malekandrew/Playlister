@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model AdminUser {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model SourcePlaylist {
+  id                   Int        @id @default(autoincrement())
+  name                 String
+  type                 String     // "xtream" | "m3u"
+  xtreamHost           String?
+  xtreamUsername       String?
+  xtreamPassword       String?
+  m3uUrl               String?
+  isEnabled            Boolean    @default(true)
+  lastSyncedAt         DateTime?
+  lastSyncChannelCount Int?
+  lastSyncError        String?
+  refreshIntervalMin   Int        @default(360)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+
+  categories Category[]
+  channels   Channel[]
+  sublists   Sublist[]
+}
+
+model Category {
+  id               Int              @id @default(autoincrement())
+  sourcePlaylistId Int
+  categoryId       String           // provider's original category ID
+  categoryName     String
+  categoryType     String           // "live" | "movie" | "series"
+  isEnabled        Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  sourcePlaylist   SourcePlaylist   @relation(fields: [sourcePlaylistId], references: [id], onDelete: Cascade)
+  sublists         SublistCategory[]
+  channels         Channel[]
+
+  @@unique([sourcePlaylistId, categoryId, categoryType])
+}
+
+model Channel {
+  id               Int             @id @default(autoincrement())
+  sourcePlaylistId Int
+  categoryId       Int?
+  name             String
+  url              String
+  groupTitle       String?
+  tvgId            String?
+  tvgName          String?
+  tvgLogo          String?
+  language         String?
+  duration         Int             @default(-1)
+  seriesName       String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  sourcePlaylist   SourcePlaylist  @relation(fields: [sourcePlaylistId], references: [id], onDelete: Cascade)
+  category         Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([sourcePlaylistId])
+  @@index([categoryId])
+  @@index([groupTitle])
+  @@index([tvgId])
+  @@index([seriesName])
+}
+
+model Sublist {
+  id               Int               @id @default(autoincrement())
+  name             String
+  sourcePlaylistId Int
+  apiKey           String            @unique @default(uuid())
+  xtreamUsername   String            @unique
+  xtreamPassword   String
+  isEnabled        Boolean           @default(true)
+  lastUsedAt       DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  sourcePlaylist   SourcePlaylist    @relation(fields: [sourcePlaylistId], references: [id], onDelete: Cascade)
+  categories       SublistCategory[]
+}
+
+model SublistCategory {
+  sublistId  Int
+  categoryId Int
+
+  sublist    Sublist   @relation(fields: [sublistId], references: [id], onDelete: Cascade)
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([sublistId, categoryId])
+}
+
+model AppSettings {
+  id                 Int      @id @default(1)
+  refreshIntervalMin Int      @default(360)
+  updatedAt          DateTime @updatedAt
+}
