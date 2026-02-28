@@ -1,37 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Playlister
+
+A self-hosted IPTV playlist manager that aggregates, filters, and redistributes channels from multiple providers via M3U8 and Xtream Codes API.
+
+## Features
+
+- **Multi-source aggregation** — Import channels from Xtream Codes API or M3U/M3U8 playlists
+- **Category filtering** — Select which Live TV, Movie, and Series categories to keep per source
+- **Sublists** — Create curated playlists scoped to a single source with hand-picked categories
+- **Xtream Codes API emulation** — Serve playlists to apps like TiviMate and IPTV Smarters via a fully emulated Xtream API
+- **M3U8 output** — Standard playlist endpoint for any M3U-compatible player
+- **API key access control** — Each sublist gets its own API key and Xtream credentials
+- **Live sync progress** — Real-time per-source progress tracking with parallel fetching
+- **Admin dashboard** — Manage sources, categories, sublists, and settings from a clean UI
+
+## Tech Stack
+
+- **Framework:** Next.js 16 (App Router)
+- **Database:** PostgreSQL 16 + Prisma 7
+- **Auth:** NextAuth v5 (Credentials)
+- **UI:** shadcn/ui, Tailwind CSS 4, Radix UI
+- **Cache/KV:** Upstash Redis (with in-memory fallback for local dev)
+- **Runtime:** Node.js, pnpm
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 20+
+- pnpm
+- PostgreSQL 16 (or Docker)
+
+### Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+# Clone the repo
+git clone https://github.com/malekandrew/Playlister.git
+cd Playlister
+
+# Install dependencies
+pnpm install
+
+# Copy env file and configure
+cp .env.example .env
+
+# Start PostgreSQL (Docker)
+docker run -d --name playlister-db \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=playlister \
+  -p 5432:5432 postgres:16-alpine
+
+# Run migrations & seed
+pnpm db:migrate
+pnpm db:seed
+
+# Start dev server
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) and log in with the admin credentials from your `.env` file.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Environment Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `AUTH_SECRET` | NextAuth secret (min 32 chars) |
+| `ADMIN_USERNAME` | Initial admin username |
+| `ADMIN_PASSWORD` | Initial admin password |
+| `KV_REST_API_URL` | Upstash Redis URL (optional for local dev) |
+| `KV_REST_API_TOKEN` | Upstash Redis token (optional for local dev) |
 
-## Learn More
+See [.env.example](.env.example) for the full list.
 
-To learn more about Next.js, take a look at the following resources:
+## Scripts
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Command | Description |
+|---|---|
+| `pnpm dev` | Start development server |
+| `pnpm build` | Build for production |
+| `pnpm start` | Start production server |
+| `pnpm db:migrate` | Run Prisma migrations |
+| `pnpm db:seed` | Seed admin user |
+| `pnpm db:studio` | Open Prisma Studio |
+| `pnpm type-check` | Run TypeScript type checking |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Architecture
 
-## Deploy on Vercel
+```
+Upstream Providers          Playlister              IPTV Players
+┌──────────────┐     sync    ┌───────────┐   serve   ┌──────────┐
+│ Xtream API   │ ──────────► │  Sources  │ ────────► │ TiviMate │
+│ M3U Playlist │             │  Sublists │           │ Smarters │
+└──────────────┘             │  Channels │           │ VLC      │
+                             └───────────┘           └──────────┘
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Sources are synced into the database with parallel fetching and atomic channel swaps. Sublists filter channels by category and are served as M3U8 playlists or via Xtream Codes API emulation with per-sublist credentials.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# Playlister
+## License
+
+Private
+
