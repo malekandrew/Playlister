@@ -9,7 +9,13 @@ function createPrismaClient() {
     return new PrismaClient({ accelerateUrl: url });
   }
 
-  const pool = new Pool({ connectionString: url });
+  const pool = new Pool({
+    connectionString: url,
+    // Suppress pg SSL warning on Vercel/production
+    ...(url.includes("sslmode=") && !url.includes("sslmode=disable")
+      ? { ssl: { rejectUnauthorized: false } }
+      : {}),
+  });
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });
 }
@@ -19,10 +25,6 @@ const globalForPrisma = globalThis as unknown as {
 };
 
 export const db = globalForPrisma.prisma ?? createPrismaClient();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = db;
-}
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = db;
