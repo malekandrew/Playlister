@@ -115,6 +115,7 @@ export async function runFullSync(): Promise<SyncResult> {
       totalChannels: 0,
       sources: sourceStatuses,
       errors: [],
+      cancelRequested: false,
     }, { immediate: true });
 
     if (sources.length === 0) {

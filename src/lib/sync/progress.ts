@@ -39,9 +39,11 @@ async function flushToDB(): Promise<void> {
   // Preserve cancelRequested flag that may have been set by another
   // serverless invocation (the cancel endpoint). Without this merge the
   // flush would overwrite the flag with whatever is in the local cache.
+  // BUT: if the cache explicitly has cancelRequested === false (e.g. at
+  // sync start), honour that — don't re-inherit a stale true from DB.
   const row = await db.appSettings.findUnique({ where: { id: 1 } });
   const dbRaw = row?.syncProgress as Record<string, unknown> | null;
-  if (dbRaw?.cancelRequested === true) {
+  if (dbRaw?.cancelRequested === true && cachedProgress.cancelRequested !== false) {
     cachedProgress.cancelRequested = true;
   }
 

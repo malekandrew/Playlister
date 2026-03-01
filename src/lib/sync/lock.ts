@@ -88,6 +88,19 @@ export async function isSyncLocked(): Promise<boolean> {
 }
 
 /**
+ * Check whether the raw lock data exists but has expired.
+ * Returns true if a lock entry exists AND its expiresAt is in the past.
+ * Used by the progress endpoint to detect dead/timed-out sync processes.
+ */
+export async function isSyncLockExpired(): Promise<boolean> {
+  const row = await db.appSettings.findUnique({ where: { id: 1 } });
+  const progress = row?.syncProgress as Record<string, unknown> | null;
+  const lock = progress?.__lock as LockData | undefined;
+  if (!lock) return false; // no lock at all
+  return Date.now() > lock.expiresAt;
+}
+
+/**
  * Force-release the sync lock regardless of ownership.
  * Used when a sync process has timed out / died and the lock is stuck.
  */

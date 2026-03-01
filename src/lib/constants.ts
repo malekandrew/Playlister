@@ -1,7 +1,7 @@
 // App-wide constants
 
 export const SYNC_LOCK_KEY = "sync:lock";
-export const SYNC_LOCK_TTL = 600; // 10 minutes in seconds
+export const SYNC_LOCK_TTL = 90; // 90 seconds – slightly above Vercel's 60s maxDuration
 
 export const SYNC_PROGRESS_KEY = "sync:progress";
 export const SYNC_PROGRESS_TTL = 3600; // 1 hour
