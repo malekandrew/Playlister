@@ -278,7 +278,7 @@ async function syncXtreamSource(source: {
   xtreamHost: string | null;
   xtreamUsername: string | null;
   xtreamPassword: string | null;
-  categories: { id: number; categoryId: string; categoryType: string }[];
+  categories: { id: number; categoryId: string; categoryType: string; categoryName: string }[];
 }, onCategoryDone?: (catsDone: number, channelsSoFar: number) => Promise<void>): Promise<number> {
   if (!source.xtreamHost || !source.xtreamUsername || !source.xtreamPassword) {
     throw new Error("Missing Xtream credentials");
@@ -296,6 +296,12 @@ async function syncXtreamSource(source: {
     throw new Error("Xtream authentication failed");
   }
 
+  // Build a lookup from category DB id to category name
+  const catNameMap = new Map<number, string>();
+  for (const cat of source.categories) {
+    catNameMap.set(cat.id, cat.categoryName);
+  }
+
   // Collect all channels across enabled categories
   const channels: {
     sourcePlaylistId: number;
@@ -306,6 +312,7 @@ async function syncXtreamSource(source: {
     tvgId: string;
     tvgName: string;
     tvgLogo: string;
+    seriesName?: string;
   }[] = [];
 
   // Track completed categories using a Set (safe across parallel workers
@@ -340,7 +347,7 @@ async function syncXtreamSource(source: {
               stream.stream_id,
               stream.container_extension || "ts"
             ),
-            groupTitle: stream.category_name || "",
+            groupTitle: stream.category_name || catNameMap.get(category.id) || "",
             tvgId: stream.epg_channel_id || "",
             tvgName: stream.name,
             tvgLogo: stream.stream_icon || "",
@@ -373,7 +380,7 @@ async function syncXtreamSource(source: {
               stream.stream_id,
               stream.container_extension || "mp4"
             ),
-            groupTitle: stream.category_name || "",
+            groupTitle: stream.category_name || catNameMap.get(category.id) || "",
             tvgId: "",
             tvgName: stream.name,
             tvgLogo: stream.stream_icon || "",
@@ -413,10 +420,11 @@ async function syncXtreamSource(source: {
                       parseInt(ep.id),
                       ep.container_extension || "mp4"
                     ),
-                    groupTitle: series.category_name || "",
+                    groupTitle: series.category_name || catNameMap.get(category.id) || "",
                     tvgId: "",
                     tvgName: series.name,
                     tvgLogo: series.cover || "",
+                    seriesName: series.name,
                   });
                 }
               }
@@ -455,7 +463,7 @@ async function syncM3USource(source: {
   id: number;
   name: string;
   m3uUrl: string | null;
-  categories: { id: number; categoryId: string; categoryType: string }[];
+  categories: { id: number; categoryId: string; categoryType: string; categoryName: string }[];
 }): Promise<number> {
   if (!source.m3uUrl) {
     throw new Error("Missing M3U URL");
@@ -531,6 +539,7 @@ async function atomicChannelSwap(
     tvgId?: string;
     tvgName?: string;
     tvgLogo?: string;
+    seriesName?: string;
   }[]
 ): Promise<void> {
   // Use raw SQL with unnest for bulk inserts — much faster than Prisma createMany
@@ -556,6 +565,7 @@ async function atomicChannelSwap(
       const tvgIds: (string | null)[] = [];
       const tvgNames: (string | null)[] = [];
       const tvgLogos: (string | null)[] = [];
+      const seriesNames: (string | null)[] = [];
 
       for (const ch of batch) {
         sourceIds.push(ch.sourcePlaylistId);
@@ -566,14 +576,15 @@ async function atomicChannelSwap(
         tvgIds.push(ch.tvgId ?? null);
         tvgNames.push(ch.tvgName ?? null);
         tvgLogos.push(ch.tvgLogo ?? null);
+        seriesNames.push(ch.seriesName ?? null);
       }
 
       await tx.$executeRawUnsafe(
-        `INSERT INTO "Channel" ("sourcePlaylistId", "categoryId", "name", "url", "groupTitle", "tvgId", "tvgName", "tvgLogo", "createdAt", "updatedAt")
+        `INSERT INTO "Channel" ("sourcePlaylistId", "categoryId", "name", "url", "groupTitle", "tvgId", "tvgName", "tvgLogo", "seriesName", "createdAt", "updatedAt")
          SELECT * FROM unnest(
            $1::int[], $2::int[], $3::text[], $4::text[],
            $5::text[], $6::text[], $7::text[], $8::text[],
-           $9::timestamp[], $10::timestamp[]
+           $9::text[], $10::timestamp[], $11::timestamp[]
          )`,
         sourceIds,
         categoryIds,
@@ -583,6 +594,7 @@ async function atomicChannelSwap(
         tvgIds,
         tvgNames,
         tvgLogos,
+        seriesNames,
         batch.map(() => new Date()),
         batch.map(() => new Date())
       );

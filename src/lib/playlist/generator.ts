@@ -55,7 +55,8 @@ export async function generatePlaylist(
     if (ch.tvgId) attrs.push(`tvg-id="${ch.tvgId}"`);
     if (ch.tvgName) attrs.push(`tvg-name="${ch.tvgName}"`);
     if (ch.tvgLogo) attrs.push(`tvg-logo="${ch.tvgLogo}"`);
-    if (ch.groupTitle) attrs.push(`group-title="${ch.groupTitle}"`);
+    const group = ch.groupTitle || ch.category?.categoryName || "";
+    if (group) attrs.push(`group-title="${group}"`);
 
     const attrStr = attrs.length > 0 ? " " + attrs.join(" ") : "";
     const duration = ch.duration ?? -1;

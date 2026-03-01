@@ -187,11 +187,10 @@ async function handleGetSeries(
   categoryIds: number[],
   filterCategoryId: string | null
 ) {
-  // Group channels by seriesName for series-type categories
+  // Get all channels from series-type categories
   const where: Record<string, unknown> = {
     categoryId: { in: categoryIds },
     category: { categoryType: "series" },
-    seriesName: { not: null },
   };
 
   if (filterCategoryId) {
@@ -204,31 +203,31 @@ async function handleGetSeries(
     orderBy: { name: "asc" },
   });
 
-  // Group by seriesName
+  // Group by seriesName (preferred) or tvgName (fallback — stores `series.name` during sync)
   const seriesMap = new Map<
     string,
-    { name: string; cover: string; categoryId: string; channels: typeof channels }
+    { name: string; cover: string; categoryId: string; channelIds: number[] }
   >();
 
   for (const ch of channels) {
-    const seriesKey = ch.seriesName || ch.name;
+    const seriesKey = ch.seriesName || ch.tvgName || ch.name;
     if (!seriesMap.has(seriesKey)) {
       seriesMap.set(seriesKey, {
         name: seriesKey,
         cover: ch.tvgLogo || "",
         categoryId: String(ch.categoryId || ""),
-        channels: [],
+        channelIds: [],
       });
     }
-    seriesMap.get(seriesKey)!.channels.push(ch);
+    seriesMap.get(seriesKey)!.channelIds.push(ch.id);
   }
 
-  let seriesId = 1;
+  // Use a stable series_id derived from the first channel ID in each group
   return NextResponse.json(
     Array.from(seriesMap.values()).map((s) => ({
-      num: seriesId,
+      num: s.channelIds[0],
       name: s.name,
-      series_id: seriesId++,
+      series_id: s.channelIds[0],
       cover: s.cover,
       plot: "",
       cast: "",
@@ -257,33 +256,62 @@ async function handleGetSeriesInfo(
     return NextResponse.json({ episodes: {} });
   }
 
-  // We use seriesName as the series identifier
-  // For simplicity, get channels that match series categories
+  // series_id is the first channel ID in the series group (set by handleGetSeries)
+  const refChannelId = parseInt(seriesId);
+  if (isNaN(refChannelId)) {
+    return NextResponse.json({ episodes: {} });
+  }
+
+  // Find the reference channel to get its seriesName/tvgName
+  const refChannel = await db.channel.findUnique({
+    where: { id: refChannelId },
+  });
+  if (!refChannel) {
+    return NextResponse.json({ episodes: {} });
+  }
+
+  const seriesKey = refChannel.seriesName || refChannel.tvgName || refChannel.name;
+
+  // Find all channels that belong to this series
   const channels = await db.channel.findMany({
     where: {
       categoryId: { in: categoryIds },
       category: { categoryType: "series" },
+      OR: [
+        { seriesName: seriesKey },
+        { tvgName: seriesKey },
+      ],
     },
     include: { category: true },
     orderBy: { name: "asc" },
   });
 
-  // Build episodes grouped by season
+  // Parse season/episode from channel name pattern: "SeriesName - S1E3 - Title"
   const episodes: Record<string, Array<Record<string, unknown>>> = {};
-  let epNum = 1;
 
   for (const ch of channels) {
-    const season = "1"; // Default season
+    let season = "1";
+    let episodeNum = 1;
+    let title = ch.name;
+
+    // Try to parse "- S<num>E<num> -" pattern
+    const match = ch.name.match(/- S(\d+)E(\d+)\s*-?\s*(.*)/i);
+    if (match) {
+      season = match[1];
+      episodeNum = parseInt(match[2]);
+      title = match[3] || ch.name;
+    }
+
     if (!episodes[season]) {
       episodes[season] = [];
     }
 
     episodes[season].push({
       id: String(ch.id),
-      episode_num: epNum++,
-      title: ch.name,
+      episode_num: episodeNum,
+      title,
       container_extension: "mp4",
-      info: { name: ch.name, duration_secs: ch.duration || 0 },
+      info: { name: title, duration_secs: ch.duration || 0 },
       custom_sid: "",
       added: Math.floor(ch.createdAt.getTime() / 1000),
       season: parseInt(season),
@@ -292,8 +320,21 @@ async function handleGetSeriesInfo(
   }
 
   return NextResponse.json({
-    seasons: [],
-    info: { name: "Series" },
+    seasons: Object.keys(episodes).map((s) => ({
+      season_number: parseInt(s),
+      name: `Season ${s}`,
+      episode_count: episodes[s].length,
+    })),
+    info: {
+      name: seriesKey,
+      cover: refChannel.tvgLogo || "",
+      plot: "",
+      cast: "",
+      director: "",
+      genre: "",
+      release_date: "",
+      category_id: String(refChannel.categoryId || ""),
+    },
     episodes,
   });
 }
