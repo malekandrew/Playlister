@@ -97,6 +97,7 @@ export function SyncProgressCard() {
   const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [polling, setPolling] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [, setTick] = useState(0); // force re-render for elapsed time
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -111,6 +112,7 @@ export function SyncProgressCard() {
           setStarting(false);
         } else {
           setPolling(false);
+          setCancelling(false);
         }
       }
     } catch {
@@ -155,6 +157,26 @@ export function SyncProgressCard() {
     }
   }
 
+  async function handleCancel() {
+    if (cancelling) {
+      // Second click while already cancelling = force reset
+      try {
+        await fetch("/api/sync/cancel", { method: "POST" });
+        setCancelling(false);
+        fetchProgress();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    setCancelling(true);
+    try {
+      await fetch("/api/sync/cancel", { method: "POST" });
+    } catch {
+      setCancelling(false);
+    }
+  }
+
   const isRunning = progress?.isRunning || starting;
 
   const overallPct =
@@ -176,13 +198,24 @@ export function SyncProgressCard() {
               Fetch channels from all enabled sources
             </CardDescription>
           </div>
-          <Button onClick={handleSync} disabled={isRunning}>
-            {starting
-              ? "Starting..."
-              : isRunning
-                ? "Syncing..."
-                : "Sync Now"}
-          </Button>
+          <div className="flex items-center gap-2">
+            {isRunning && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleCancel}
+              >
+                {cancelling ? "Force Reset" : "Cancel"}
+              </Button>
+            )}
+            <Button onClick={handleSync} disabled={isRunning}>
+              {starting
+                ? "Starting..."
+                : isRunning
+                  ? "Syncing..."
+                  : "Sync Now"}
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -196,9 +229,11 @@ export function SyncProgressCard() {
                     ? "destructive"
                     : progress.status === "completed_with_errors"
                       ? "destructive"
-                      : progress.isRunning
-                        ? "default"
-                        : "secondary"
+                      : progress.status === "cancelled"
+                        ? "outline"
+                        : progress.isRunning
+                          ? "default"
+                          : "secondary"
                 }
               >
                 {progress.isRunning ? (

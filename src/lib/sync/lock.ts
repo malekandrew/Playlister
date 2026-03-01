@@ -86,3 +86,12 @@ export async function isSyncLocked(): Promise<boolean> {
   const existing = await getLock();
   return existing !== null;
 }
+
+/**
+ * Force-release the sync lock regardless of ownership.
+ * Used when a sync process has timed out / died and the lock is stuck.
+ */
+export async function forceReleaseSyncLock(): Promise<void> {
+  await ensureRow();
+  await setLock(null);
+}

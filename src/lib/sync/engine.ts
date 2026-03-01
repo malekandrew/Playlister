@@ -1,10 +1,25 @@
 import { db } from "@/lib/db";
 import { XtreamClient } from "./xtream-client";
 import { fetchAndParseM3U, extractGroups } from "./m3u-parser";
-import { updateSyncProgress, addSyncError, resetSyncProgress, getSyncProgress, flushSyncProgress } from "./progress";
+import { updateSyncProgress, addSyncError, resetSyncProgress, getSyncProgress, flushSyncProgress, isCancelRequested } from "./progress";
 import { acquireSyncLock, releaseSyncLock } from "./lock";
 import { randomUUID } from "crypto";
 import type { SourceSyncStatus } from "@/types";
+
+/** Thrown when user requests cancellation. */
+class SyncCancelledError extends Error {
+  constructor() {
+    super("Sync cancelled by user");
+    this.name = "SyncCancelledError";
+  }
+}
+
+/** Check cancel flag from DB; throw if requested. */
+async function throwIfCancelled(): Promise<void> {
+  if (await isCancelRequested()) {
+    throw new SyncCancelledError();
+  }
+}
 
 /** Concurrency limit for parallel API fetches */
 const XTREAM_CONCURRENCY = 5;
@@ -119,10 +134,14 @@ export async function runFullSync(): Promise<SyncResult> {
       };
     }
 
-    let globalProcessedCats = 0;
+    /** Derive global processed categories from all source statuses. */
+    const getGlobalProcessedCats = () =>
+      sourceStatuses.reduce((sum, s) => sum + s.categoriesProcessed, 0);
 
     // Process each source
     for (let si = 0; si < sources.length; si++) {
+      // Check for cancellation before starting each source
+      await throwIfCancelled();
       const source = sources[si];
       const srcStatus = sourceStatuses[si];
 
@@ -141,9 +160,8 @@ export async function runFullSync(): Promise<SyncResult> {
         const onCategoryDone = async (catsDone: number, channelsSoFar: number) => {
           srcStatus.categoriesProcessed = catsDone;
           srcStatus.channelsFetched = channelsSoFar;
-          globalProcessedCats++;
           await updateSyncProgress({
-            processedCategories: globalProcessedCats,
+            processedCategories: getGlobalProcessedCats(),
             sources: sourceStatuses,
           });
         };
@@ -154,7 +172,6 @@ export async function runFullSync(): Promise<SyncResult> {
           channelCount = await syncM3USource(source);
           srcStatus.categoriesProcessed = srcStatus.categoriesTotal;
           srcStatus.channelsFetched = channelCount;
-          globalProcessedCats += source.categories.length;
         }
 
         totalChannels += channelCount;
@@ -166,7 +183,7 @@ export async function runFullSync(): Promise<SyncResult> {
 
         await updateSyncProgress({
           processedSources: si + 1,
-          processedCategories: globalProcessedCats,
+          processedCategories: getGlobalProcessedCats(),
           totalChannels,
           sources: sourceStatuses,
           currentStep: `Completed ${source.name} (${channelCount} channels)`,
@@ -189,11 +206,11 @@ export async function runFullSync(): Promise<SyncResult> {
         srcStatus.status = "error";
         srcStatus.error = err instanceof Error ? err.message : String(err);
         srcStatus.completedAt = new Date().toISOString();
-        globalProcessedCats += source.categories.length - srcStatus.categoriesProcessed;
+        srcStatus.categoriesProcessed = srcStatus.categoriesTotal;
 
         await updateSyncProgress({
           processedSources: si + 1,
-          processedCategories: globalProcessedCats,
+          processedCategories: getGlobalProcessedCats(),
           sources: sourceStatuses,
         });
 
@@ -218,14 +235,25 @@ export async function runFullSync(): Promise<SyncResult> {
       sources: sourceStatuses,
     }, { immediate: true });
   } catch (err) {
-    const errMsg = `Sync failed: ${err instanceof Error ? err.message : String(err)}`;
-    errors.push(errMsg);
-    await updateSyncProgress({
-      isRunning: false,
-      status: "error",
-      completedAt: new Date().toISOString(),
-      errors: [errMsg],
-    }, { immediate: true });
+    if (err instanceof SyncCancelledError) {
+      await updateSyncProgress({
+        isRunning: false,
+        status: "cancelled",
+        currentStep: "Sync cancelled by user",
+        completedAt: new Date().toISOString(),
+        cancelRequested: false,
+      }, { immediate: true });
+    } else {
+      const errMsg = `Sync failed: ${err instanceof Error ? err.message : String(err)}`;
+      errors.push(errMsg);
+      await updateSyncProgress({
+        isRunning: false,
+        status: "error",
+        completedAt: new Date().toISOString(),
+        errors: [errMsg],
+        cancelRequested: false,
+      }, { immediate: true });
+    }
   } finally {
     await flushSyncProgress();
     await releaseSyncLock(lockId);
@@ -279,7 +307,17 @@ async function syncXtreamSource(source: {
     tvgLogo: string;
   }[] = [];
 
-  let processedCategories = 0;
+  // Track completed categories using a Set (safe across parallel workers
+  // since JS is single-threaded between awaits and Set.add is synchronous)
+  const completedCatIds = new Set<string>();
+  const totalCatCount = source.categories.length;
+
+  const markCategoryDone = async (categoryId: string) => {
+    completedCatIds.add(categoryId);
+    if (onCategoryDone) {
+      await onCategoryDone(completedCatIds.size, channels.length);
+    }
+  };
 
   // Group categories by type for smarter batching
   const liveCategories = source.categories.filter(c => c.categoryType === "live");
@@ -289,6 +327,7 @@ async function syncXtreamSource(source: {
   // --- Fetch all live streams in parallel batches ---
   if (liveCategories.length > 0) {
     await parallelMap(liveCategories, XTREAM_CONCURRENCY, async (category) => {
+      await throwIfCancelled();
       try {
         const streams = await client.getLiveStreams(category.categoryId);
         for (const stream of streams) {
@@ -306,22 +345,22 @@ async function syncXtreamSource(source: {
             tvgLogo: stream.stream_icon || "",
           });
         }
-        processedCategories++;
-        if (onCategoryDone) {
-          await onCategoryDone(processedCategories, channels.length);
-        }
+        await markCategoryDone(category.categoryId);
       } catch (err) {
         await addSyncError(
           `Category ${category.categoryId} (live): ${err instanceof Error ? err.message : String(err)}`
         );
-        processedCategories++;
+        await markCategoryDone(category.categoryId);
       }
     });
   }
 
+  await throwIfCancelled();
+
   // --- Fetch all VOD streams in parallel batches ---
   if (movieCategories.length > 0) {
     await parallelMap(movieCategories, XTREAM_CONCURRENCY, async (category) => {
+      await throwIfCancelled();
       try {
         const streams = await client.getVodStreams(category.categoryId);
         for (const stream of streams) {
@@ -339,22 +378,22 @@ async function syncXtreamSource(source: {
             tvgLogo: stream.stream_icon || "",
           });
         }
-        processedCategories++;
-        if (onCategoryDone) {
-          await onCategoryDone(processedCategories, channels.length);
-        }
+        await markCategoryDone(category.categoryId);
       } catch (err) {
         await addSyncError(
           `Category ${category.categoryId} (movie): ${err instanceof Error ? err.message : String(err)}`
         );
-        processedCategories++;
+        await markCategoryDone(category.categoryId);
       }
     });
   }
 
+  await throwIfCancelled();
+
   // --- Fetch series with parallel category + parallel episode info ---
   if (seriesCategories.length > 0) {
     await parallelMap(seriesCategories, XTREAM_CONCURRENCY, async (category) => {
+      await throwIfCancelled();
       try {
         const seriesList = await client.getSeries(category.categoryId);
 
@@ -386,15 +425,12 @@ async function syncXtreamSource(source: {
           }
         });
 
-        processedCategories++;
-        if (onCategoryDone) {
-          await onCategoryDone(processedCategories, channels.length);
-        }
+        await markCategoryDone(category.categoryId);
       } catch (err) {
         await addSyncError(
           `Category ${category.categoryId} (series): ${err instanceof Error ? err.message : String(err)}`
         );
-        processedCategories++;
+        await markCategoryDone(category.categoryId);
       }
     });
   }

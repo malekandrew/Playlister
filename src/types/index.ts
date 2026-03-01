@@ -29,6 +29,7 @@ export interface SyncProgress {
   errors: string[];
   startedAt?: string;
   completedAt?: string;
+  cancelRequested?: boolean;
 }
 
 export interface SourceFormData {

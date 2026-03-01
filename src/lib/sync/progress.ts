@@ -35,9 +35,28 @@ async function flushToDB(): Promise<void> {
   if (!cachedProgress) return;
   dirty = false;
   lastFlushTime = Date.now();
+
+  // Preserve cancelRequested flag that may have been set by another
+  // serverless invocation (the cancel endpoint). Without this merge the
+  // flush would overwrite the flag with whatever is in the local cache.
+  const row = await db.appSettings.findUnique({ where: { id: 1 } });
+  const dbRaw = row?.syncProgress as Record<string, unknown> | null;
+  if (dbRaw?.cancelRequested === true) {
+    cachedProgress.cancelRequested = true;
+  }
+
+  // Also preserve the __lock field managed by lock.ts
+  const lockData = dbRaw?.__lock;
+  const toWrite: Record<string, unknown> = {
+    ...(cachedProgress as unknown as Record<string, unknown>),
+  };
+  if (lockData) {
+    toWrite.__lock = lockData;
+  }
+
   await db.appSettings.update({
     where: { id: 1 },
-    data: { syncProgress: cachedProgress as unknown as Prisma.InputJsonValue },
+    data: { syncProgress: toWrite as unknown as Prisma.InputJsonValue },
   });
 }
 
@@ -146,4 +165,40 @@ export async function flushSyncProgress(): Promise<void> {
     await flushToDB();
   }
   cachedProgress = null;
+}
+
+/**
+ * Request cancellation of the currently running sync.
+ * Sets the cancelRequested flag directly in the DB so the
+ * sync engine (possibly in another serverless invocation) can see it.
+ */
+export async function requestSyncCancel(): Promise<void> {
+  await ensureRow();
+  const row = await db.appSettings.findUnique({ where: { id: 1 } });
+  const raw = (row?.syncProgress as Record<string, unknown>) || {};
+  raw.cancelRequested = true;
+  await db.appSettings.update({
+    where: { id: 1 },
+    data: { syncProgress: raw as unknown as Prisma.InputJsonValue },
+  });
+  // Also update in-memory cache if present
+  if (cachedProgress) {
+    cachedProgress.cancelRequested = true;
+  }
+}
+
+/**
+ * Check if cancellation has been requested.
+ * Reads directly from DB to get the latest state (not cached).
+ * Also syncs the flag into the in-memory cache so subsequent
+ * flushToDB() calls will preserve it.
+ */
+export async function isCancelRequested(): Promise<boolean> {
+  const row = await db.appSettings.findUnique({ where: { id: 1 } });
+  const raw = row?.syncProgress as Record<string, unknown> | null;
+  const cancelled = raw?.cancelRequested === true;
+  if (cancelled && cachedProgress) {
+    cachedProgress.cancelRequested = true;
+  }
+  return cancelled;
 }
