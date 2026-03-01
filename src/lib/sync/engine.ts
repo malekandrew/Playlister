@@ -586,7 +586,7 @@ async function atomicChannelSwap(
         batch.map(() => new Date())
       );
     }
-  });
+  }, { timeout: 30000 });
 }
 
 /**
